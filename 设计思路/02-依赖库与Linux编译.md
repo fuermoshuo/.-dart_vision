@@ -49,6 +49,56 @@ cmake ..
 make -j8
 ```
 
+### 换机器 / 从 U 盘拷贝后：必须重新编译
+
+**不要拷贝 `build/`、`build_camera/`、`build_calib/`。**
+`CMakeCache.txt` 里记的是上一台机器的绝对路径，且不同 OpenCV 版本
+（`libopencv_core.so.4.5` vs `4.10`）的可执行文件不能直接互换，
+拷过去大概率是 `error while loading shared libraries` 或链接到错误的库。
+
+U 盘只带源码和配置：
+
+```
+CMakeLists.txt  apps/  dart_aim/  hardware/  rm_utils/  threads/
+scripts/  config/  设计思路/  README.MD  .gitignore  .gitattributes
+```
+
+不带：`build*/`、`out/`、`logs/`、`.vs/`。最省事的方式是用 git 打包：
+
+```bash
+git archive --format=zip HEAD -o dart_vision.zip
+```
+
+到新机器后：
+
+```bash
+unzip dart_vision.zip -d ~/dart_vision
+cd ~/dart_vision
+
+# 1. 确认依赖和 OpenCV 版本
+pkg-config --modversion opencv4
+pkg-config --modversion yaml-cpp spdlog
+ls /opt/MVS/include/MvCameraControl.h
+
+# 2. 全新编译
+rm -rf build build_camera build_calib
+mkdir build && cd build
+cmake ..
+make -j$(nproc)
+
+# 3. 确认链接的是本机 OpenCV
+ldd ./dart_calibrate | grep -i opencv
+```
+
+- OpenCV 版本不同**不用改代码**，重新编译会自动链接新版本；
+- 系统里有多个 OpenCV 时，显式指定：
+  `cmake .. -DOpenCV_DIR=/usr/lib/x86_64-linux-gnu/cmake/opencv4`；
+- OpenCV 3.x 也能编（`dart_calibrate` 里对 `findChessboardCornersSB`
+  做了版本保护），但仍建议 4.x；
+- 经 Windows U 盘（exFAT/NTFS）拷贝后，脚本的可执行位可能丢失：
+  `chmod +x scripts/*.sh`；
+- 如果 `.sh` 在 Windows 编辑器里改过，确认换行符仍是 LF。
+
 ## 5. 运行
 
 ```bash
