@@ -278,6 +278,8 @@ DartAimResult DartTrack::updateSelected(const DartTarget &target, uint8_t role) 
             result.state     = AIM_HOLD;
             result.error_x   = 0.0f;
             result.target_yaw = 0.0f;
+            MAS_LOG_INFO("Aim HOLD reached: target={} center=({:.0f}, {:.0f})",
+                         static_cast<int>(role), hold_x_, hold_y_);
         }
     }
     else
@@ -309,9 +311,13 @@ void DartTrack::setCommand(uint8_t cmd) noexcept
 {
     if (cmd == kCmdRecapture)
     {
-        // 保持当前目标，重新粗对准
-        if (command_ != TARGET_NONE)
+        // 保持当前目标，重新粗对准。
+        // 只有已经 HOLD 时才需要清掉锁定；重复收到 3 时如果还在 ACQUIRE，
+        // 不能再清 align_count_，否则永远凑不满 align_frames_ 帧、锁不上。
+        if (command_ != TARGET_NONE && state_ == AIM_HOLD)
         {
+            MAS_LOG_INFO("Recapture command: HOLD -> ACQUIRE (target={})",
+                         static_cast<int>(command_));
             state_       = AIM_ACQUIRE;
             align_count_ = 0;
         }

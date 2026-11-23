@@ -211,6 +211,7 @@ void UserSerial::receiveSerial()
                 {
                     last_command_.store(cmd);
                     has_received_data_.store(true);
+                    command_seq_.fetch_add(1, std::memory_order_relaxed);
                 }
             }
         }

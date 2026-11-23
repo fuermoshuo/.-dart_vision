@@ -68,6 +68,10 @@ class UserSerial
     // 最近一次接收到的命令字节
     uint8_t lastCommand() const { return last_command_.load(); }
 
+    // 每收到一个合法命令字节就 +1，用来区分"新命令"和"上次留下的旧值"。
+    // 单字节协议没有序号，靠它避免把一次性的 3 当成状态每帧重放。
+    uint32_t commandSeq() const { return command_seq_.load(std::memory_order_relaxed); }
+
   private:
     explicit UserSerial(const std::string &config_path = "config/serial_config.yaml");
 
@@ -94,6 +98,7 @@ class UserSerial
     std::vector<uint8_t>  temp_read_buf_;
     std::atomic<bool>     has_received_data_{false};
     std::atomic<uint8_t>  last_command_{0};
+    std::atomic<uint32_t> command_seq_{0};
 };
 
 #endif // _USER_SERIAL_H_

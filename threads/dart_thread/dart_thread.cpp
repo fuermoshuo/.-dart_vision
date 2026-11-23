@@ -155,8 +155,9 @@ void dart_thread_func(std::shared_ptr<rigtorp::SPSCQueue<CameraFrame>> camera_bu
     UserSerial &serial = UserSerial::getInstance();
 
     // 只在状态变化时打日志，避免刷屏
-    uint8_t last_aim_state  = 255;
-    uint8_t last_aim_target = 255;
+    uint8_t  last_aim_state  = 255;
+    uint8_t  last_aim_target = 255;
+    uint32_t last_cmd_seq    = 0;   // 只处理真正新收到的命令字节，避免重放旧的 3
 
     while (!g_shutdown)
     {
@@ -175,8 +176,12 @@ void dart_thread_func(std::shared_ptr<rigtorp::SPSCQueue<CameraFrame>> camera_bu
                     auto targets = detector.detectAll(frame.frame, "DartCamera");
 
                     // 2. 串口下发的目标选择（1=前哨站, 2=基地, 3=保持目标重新粗对准）
-                    if (serial.hasReceivedData())
+                    //    commandSeq 变化才说明是"新命令"；否则 lastCommand 一直是旧值，
+                    //    每帧重放会让一次性的 3 反复清掉 HOLD / 对齐计数。
+                    const uint32_t cmd_seq = serial.commandSeq();
+                    if (cmd_seq != last_cmd_seq)
                     {
+                        last_cmd_seq = cmd_seq;
                         tracker.setCommand(serial.lastCommand());
                     }
 
