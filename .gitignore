@@ -1,0 +1,30 @@
+# ===== 构建产物（不要提交）=====
+build/
+build_*/
+out/build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+
+# ===== 运行产物 =====
+out/
+logs/
+
+# ===== IDE / 编辑器 =====
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# ===== 系统 / 临时文件 =====
+.DS_Store
+Thumbs.db
+*.swp
+*~

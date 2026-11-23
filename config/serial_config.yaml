@@ -1,0 +1,10 @@
+serial:
+  enable: false                 # false = 完全不打开/重连串口（没接电控、纯视觉调试时用）
+  debug: false
+  port: "/dev/ttyACM0"          # udev 软链接；也可直接填 /dev/ttyACM0(USB CDC) 或 /dev/ttyUSB0(USB转串口)，见 设计思路/04 第 5 节
+  baudrate: 115200
+  timeout: 2
+  bytesize: 8
+  parity: "none"
+  stopbits: 1
+  flowcontrol: "none"
