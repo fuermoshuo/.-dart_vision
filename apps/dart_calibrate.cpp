@@ -59,21 +59,19 @@ void printUsage()
     std::cout <<
         "用法:\n"
         "  dart_calibrate <图片目录 | 图片/视频文件...> [选项]\n"
-        "  dart_calibrate --camera [相机配置] [选项]     # 实时相机，内存采样，不存任何文件\n"
+        "  dart_calibrate --camera [相机配置] [选项]     # 实时相机，按 s 采样，不存任何文件\n"
         "\n"
         "选项:\n"
         "  --camera [yaml] 用海康相机实时标定（默认 config/hikcamera.yaml），\n"
-        "                  自动采样，结果只打印，不写图片/视频到磁盘\n"
+        "                  窗口里按 s 采一张，图片只留在内存，不写磁盘\n"
         "  --grid TYPE     标定板类型: auto(默认) / chess(棋盘格) / circles(圆点阵)\n"
         "  --pattern CxR   棋盘格=内角点数，圆点阵=圆点列数x行数\n"
         "                  chess 默认 9x6；circles 例如 11x10\n"
         "  --square  M     方格边长或圆点间距（米），默认 0.025；\n"
         "                  只影响外参，不影响 fx/cx\n"
         "  --step    N     视频抽帧间隔，默认 10（每 10 帧取 1 帧）\n"
-        "  --max     N     最多采样多少张有效图像，默认 40\n"
-        "  --min-move PX   实时模式：角点至少移动多少像素才收，默认 40\n"
-        "  --interval MS   实时模式：两次采样的最小间隔，默认 400ms\n"
-        "  --no-window     实时模式不弹预览窗口，纯自动采样\n"
+        "  --max     N     最多采样多少张有效图像；实时模式默认 20，其他模式默认 40\n"
+        "  --no-window     实时模式不弹预览窗口：检测到标定板后每 1 秒自动采一张\n"
         "  --show          图片/视频模式显示找到角点的画面（需要 GUI）\n"
         "  -h, --help      显示本帮助\n"
         "\n"
@@ -81,7 +79,7 @@ void printUsage()
         "  ./dart_calibrate out/photos\n"
         "  ./dart_calibrate out/photos/*.png\n"
         "  ./dart_calibrate chessboard.mp4 --step 15 --pattern 9x6\n"
-        "  ./dart_calibrate --camera                    # 不存图片，挥动棋盘自动采样\n"
+        "  ./dart_calibrate --camera                    # 窗口里按 s 采样，不存图片\n"
         "  ./dart_calibrate --camera --grid circles --pattern 11x10 --square 0.01\n"
         "                                               # 用 calib.io 圆点板，间距 10mm\n";
 }
@@ -203,11 +201,10 @@ int main(int argc, char **argv)
     double      square = 0.025;
     int         step   = 10;
     int         max_images = 40;
+    bool        max_specified = false;
     bool        show   = false;
     bool        live   = false;
     bool        no_window = false;
-    float       min_move_px = 40.0f;
-    int         sample_interval_ms = 400;
     std::string camera_config = "config/hikcamera.yaml";
     std::vector<fs::path> inputs;
 
@@ -226,14 +223,6 @@ int main(int argc, char **argv)
         else if (arg == "--no-window")
         {
             no_window = true;
-        }
-        else if (arg == "--min-move" && i + 1 < argc)
-        {
-            min_move_px = std::max(1.0f, static_cast<float>(std::stod(argv[++i])));
-        }
-        else if (arg == "--interval" && i + 1 < argc)
-        {
-            sample_interval_ms = std::max(0, std::stoi(argv[++i]));
         }
         else if (arg == "--camera")
         {
@@ -277,6 +266,7 @@ int main(int argc, char **argv)
         else if (arg == "--max" && i + 1 < argc)
         {
             max_images = std::max(kMinImages, std::stoi(argv[++i]));
+            max_specified = true;
         }
         else if (!arg.empty() && arg[0] == '-')
         {
@@ -373,8 +363,13 @@ int main(int argc, char **argv)
     if (live)
     {
 #ifdef DART_CALIBRATE_WITH_CAMERA
-        std::cout << "实时标定模式：挥动棋盘格，工具在内存中自动采样，不写任何文件。\n"
-                  << "采样 " << max_images << " 张后自动结束，也可以按 q / ESC 提前结束。\n";
+        // 实时模式没显式给 --max 时，默认采 20 张就够
+        if (!max_specified) max_images = 20;
+
+        std::cout << "实时标定模式：\n"
+                  << "  - 窗口里会一直显示标定板角点、FPS 和已采样数量\n"
+                  << "  - 识别到板子（BOARD OK）时按 s 采一张，只进内存，不写磁盘\n"
+                  << "  - 采满 " << max_images << " 张自动计算，按 q / ESC 提前结束\n";
 
         hikcamera::HikCamera camera(camera_config);
         if (!camera.openCamera())
@@ -385,15 +380,41 @@ int main(int argc, char **argv)
         bool gui_ok = !no_window;
         if (no_window)
         {
-            std::cout << "已禁用预览窗口，采满 " << max_images << " 张后自动结束。\n";
+            std::cout << "已禁用预览窗口：检测到标定板后每 1 秒自动采一张，采满 "
+                      << max_images << " 张自动结束。\n";
         }
 
         std::vector<cv::Point2f> last_corners;
-        auto last_accept = std::chrono::steady_clock::time_point{};
+        auto last_found_time  = std::chrono::steady_clock::time_point{};
+        auto last_sample_time = std::chrono::steady_clock::time_point{};
         const auto start_time = std::chrono::steady_clock::now();
 
-        const auto  kSampleInterval = std::chrono::milliseconds(sample_interval_ms);
-        const float kMinMovePx      = min_move_px;  // 与上一张相比角点至少移动多少像素才收
+        // FPS 统计
+        int    fps_frames = 0;
+        auto   fps_time   = start_time;
+        double fps        = 0.0;
+
+        // 窗口底部的短提示（只支持 ASCII，OpenCV 默认字体画不了中文）
+        std::string notice;
+        auto        notice_until = std::chrono::steady_clock::time_point{};
+        auto setNotice = [&](const std::string &msg, int ms) {
+            notice       = msg;
+            notice_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        };
+
+        // 采一张：角点进内存，不写文件。返回 true 表示已经采满。
+        auto addSample = [&](const std::vector<cv::Point2f> &corners) -> bool {
+            object_points_all.push_back(object_points);
+            image_points_all.push_back(corners);
+            last_corners     = corners;
+            last_sample_time = std::chrono::steady_clock::now();
+            ++used;
+
+            const cv::Point2f center = corners[corners.size() / 2];
+            std::cout << "采样 " << used << "/" << max_images
+                      << "   板中心 (" << cvRound(center.x) << ", " << cvRound(center.y) << ")\n";
+            return used >= max_images;
+        };
 
         while (used < max_images)
         {
@@ -414,10 +435,13 @@ int main(int argc, char **argv)
 
             ++seen;
 
-            if (used == 0 && now - start_time > std::chrono::seconds(120))
+            ++fps_frames;
+            const double fps_elapsed = std::chrono::duration<double>(now - fps_time).count();
+            if (fps_elapsed >= 0.5)
             {
-                std::cerr << "120 秒内没有成功检测到棋盘格，退出。检查 --pattern 是否与实际内角点数量一致。\n";
-                break;
+                fps        = fps_frames / fps_elapsed;
+                fps_frames = 0;
+                fps_time   = now;
             }
 
             cv::Mat gray;
@@ -436,42 +460,24 @@ int main(int argc, char **argv)
             std::vector<cv::Point2f> corners;
             const bool found = size_ok && findCorners(gray, pattern, grid, corners);
 
-            bool accept = false;
             if (found)
             {
-                if (object_points_all.empty())
-                {
-                    // 第一张直接收
-                    accept = true;
-                }
-                else if (now - last_accept >= kSampleInterval)
-                {
-                    // 与上一张相比棋盘位置/姿态要有明显变化，避免同一位置重复采样
-                    float max_move = 1e9f;
-                    if (last_corners.size() == corners.size())
-                    {
-                        max_move = 0.0f;
-                        for (size_t k = 0; k < corners.size(); ++k)
-                        {
-                            max_move = std::max(max_move,
-                                                static_cast<float>(cv::norm(corners[k] - last_corners[k])));
-                        }
-                    }
-                    accept = (max_move >= kMinMovePx);
-                }
+                last_corners    = corners;
+                last_found_time = now;
             }
 
-            if (accept)
-            {
-                object_points_all.push_back(object_points);
-                image_points_all.push_back(corners);
-                last_corners = corners;
-                last_accept  = now;
-                ++used;
+            // 检测短暂丢失时保留上一次的框 800ms，避免窗口一直闪
+            const bool recent = !last_corners.empty() &&
+                                std::chrono::duration_cast<std::chrono::milliseconds>(now - last_found_time) <
+                                    std::chrono::milliseconds(800);
 
-                const cv::Point2f center = corners[corners.size() / 2];
-                std::cout << "采样 " << used << "/" << max_images
-                          << "   棋盘中心 (" << cvRound(center.x) << ", " << cvRound(center.y) << ")\n";
+            // 没有窗口时没法按键：检测到板子就每 1 秒自动采一张
+            if (!gui_ok && found && now - last_sample_time >= std::chrono::seconds(1))
+            {
+                if (addSample(corners))
+                {
+                    break;
+                }
             }
 
             if (gui_ok)
@@ -487,25 +493,65 @@ int main(int argc, char **argv)
                     {
                         cv::cvtColor(data.frame, vis, cv::COLOR_GRAY2BGR);
                     }
+
                     if (found)
                     {
                         cv::drawChessboardCorners(vis, pattern, corners, true);
                     }
+                    else if (recent)
+                    {
+                        // 用上一次成功的角点顶一下，减少闪烁；状态文字会标明已丢失
+                        cv::drawChessboardCorners(vis, pattern, last_corners, false);
+                    }
 
-                    char info[160];
-                    std::snprintf(info, sizeof(info), "samples %d/%d  %s   q/ESC = finish",
-                                  used, max_images, found ? "board OK" : "no board");
-                    cv::putText(vis, info, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 0.9,
-                                found ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), 2);
+                    char line1[160];
+                    std::snprintf(line1, sizeof(line1), "FPS %.1f   samples %d/%d",
+                                  fps, used, max_images);
+                    cv::putText(vis, line1, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 0.9,
+                                cv::Scalar(255, 255, 255), 2);
+
+                    const char *status = found ? "BOARD OK" : (recent ? "BOARD LOST (last seen)" : "NO BOARD");
+                    const cv::Scalar status_color = found ? cv::Scalar(0, 255, 0)
+                                                    : (recent ? cv::Scalar(0, 255, 255)
+                                                              : cv::Scalar(0, 0, 255));
+                    cv::putText(vis, status, cv::Point(20, 78), cv::FONT_HERSHEY_SIMPLEX, 0.9,
+                                status_color, 2);
+
+                    cv::putText(vis, "s = sample    q/ESC = finish", cv::Point(20, 116),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(220, 220, 220), 1);
+
+                    if (now < notice_until)
+                    {
+                        cv::putText(vis, notice, cv::Point(20, 154), cv::FONT_HERSHEY_SIMPLEX, 0.8,
+                                    cv::Scalar(0, 255, 255), 2);
+                    }
+
                     cv::imshow("dart_calibrate (live)", vis);
 
                     const int key = cv::waitKey(1) & 0xFF;
                     if (key == 27 || key == 'q' || key == 'Q') break;
+
+                    if (key == 's' || key == 'S')
+                    {
+                        if (found)
+                        {
+                            if (addSample(corners))
+                            {
+                                break;
+                            }
+                            setNotice("SAMPLE OK", 800);
+                        }
+                        else
+                        {
+                            setNotice("NO BOARD - s ignored", 1000);
+                            std::cout << "未识别到标定板，本次按 s 未采样\n";
+                        }
+                    }
                 }
                 catch (const cv::Exception &)
                 {
                     gui_ok = false;
-                    std::cout << "没有可用显示（headless），继续自动采样，采满即结束。\n";
+                    std::cout << "没有可用显示（headless），改为检测到板子后每秒自动采样一张。\n";
                 }
             }
         }
